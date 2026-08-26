@@ -1,0 +1,22 @@
+# anynines / CloudFoundry adaption of the hermes-agent image.
+#
+# Thin wrapper image: keeps the stock mmcen/hermes-agent runtime and s6
+# layout, only swaps the entrypoint for one that also boots the side
+# services (cloudflared / dashboard / sshd) under CF's diego runtime,
+# where the image can never own PID 1.
+#
+# Build:
+#   docker build -f Dockerfile.anynines -t mmcen/hermes-agent:anynines .
+#
+# Push (requires Docker Hub access to the mmcen org):
+#   docker push mmcen/hermes-agent:anynines
+#
+# For GitHub Actions build+push, see .github/workflows/docker-anynines.yml.
+
+FROM mmcen/hermes-agent:latest
+
+COPY docker/entrypoint-anynines.sh /opt/hermes/docker/entrypoint-anynines.sh
+RUN chmod +x /opt/hermes/docker/entrypoint-anynines.sh
+
+ENTRYPOINT ["/opt/hermes/docker/entrypoint-anynines.sh"]
+CMD []
