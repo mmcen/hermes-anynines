@@ -34,6 +34,13 @@
 > 部署会 `Permission denied`。2026-08-27 已通过 workflow 重构修复 —— 现在
 > `:latest` = wrapper，可直接部署。主仓库 `mmcen/hermes-agent` 只保留
 > `latest`/`main`，anynines 相关 tag 已全部清理。
+>
+> ⚠️ 2026-08-27 二次事故：主 workflow `docker.yml`（`Docker Build, Test, and
+> Publish`）曾把 base 镜像也标成 `:latest`，导致任何 main push 都会覆盖
+> wrapper 的 `:latest` → CF 重启拉错镜像 `Permission denied` crash。
+> **已修复**（commit `3bde94d16`）：`docker.yml` 只推 `:main`，`:latest` 专属
+> wrapper。若再遇 `:latest` 被覆盖（size ≈ 984M 而非 981M），手动
+> workflow_dispatch `docker-anynines.yml` 重建 wrapper 即可。
 
 ---
 
