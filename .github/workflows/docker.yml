@@ -288,7 +288,12 @@ jobs:
           if [ "${{ github.event_name }}" = "release" ]; then
             tags=(-t "${IMAGE_NAME}:${RELEASE_TAG}")
           else
-            tags=(-t "${IMAGE_NAME}:main" -t "${IMAGE_NAME}:latest")
+            # NOTE: do NOT tag :latest here — this workflow builds the BASE
+            # image (stock Dockerfile, no anynines wrapper entrypoint).
+            # `:latest` is reserved for the ready-to-deploy wrapper, which
+            # docker-anynines.yml publishes. Tagging base as :latest would
+            # overwrite it and crash CF deploys (Permission denied, exit 126).
+            tags=(-t "${IMAGE_NAME}:main")
           fi
           # Retry: Docker Hub API + just-pushed digest eventual consistency
           # can transiently fail the create; the operation is idempotent.
