@@ -26,6 +26,17 @@ fi
 echo "[hermes] [anynines] CF fallback (not PID 1): manual side-service bootstrap" >&2
 export PATH="/command:/package/admin/s6/command:${PATH}"
 
+# CF fallback: /init never runs here, so /run/s6/container_environment only
+# holds the tiny stage2-hook seed — not the CF-injected env (TUNNEL_TOKEN,
+# SSH_ENABLED, HERMES_DASHBOARD_*, ...). `with-contenv` would then wipe the
+# process env and re-seed from that near-empty dir, silently disabling all
+# side services (only `hermes gateway run` would survive). Ask with-contenv
+# to keep the current environment instead; this mirrors normal s6-overlay
+# behaviour where /init already populated container_environment from the
+# same process env we launch with. See also the S6_KEEP_ENV contract in
+# s6-overlay's with-contenv.
+export S6_KEEP_ENV=1
+
 # Stock root bootstrap: UID/GID remap, volume chown, config seeding,
 # skills sync (same as the official non-PID-1 fallback).
 /opt/hermes/docker/stage2-hook.sh

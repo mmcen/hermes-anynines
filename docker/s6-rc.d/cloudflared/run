@@ -12,6 +12,11 @@ case "${TUNNEL_TOKEN:-}" in
         ;;
 esac
 
-# Drop to hermes user if running as root
-[ "$(id -u)" = 0 ] && set -- s6-setuidgid hermes "$@"
-exec cloudflared tunnel --no-autoupdate --loglevel info run --token "${TUNNEL_TOKEN}"
+# Drop to hermes user if running as root (same pattern as dashboard/run).
+# NOTE: the previous `[ root ] && set -- s6-setuidgid ...` then
+# `exec cloudflared` did NOT actually drop privileges — the exec line
+# hard-coded `cloudflared` and never used $@, so cloudflared kept running
+# as root. Fixed by choosing the exec line up front.
+[ "$(id -u)" = 0 ] || exec cloudflared tunnel --no-autoupdate --loglevel info run --token "${TUNNEL_TOKEN}"
+exec s6-setuidgid hermes cloudflared tunnel \
+    --no-autoupdate --loglevel info run --token "${TUNNEL_TOKEN}"

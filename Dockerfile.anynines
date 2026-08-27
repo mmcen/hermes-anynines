@@ -6,16 +6,25 @@
 # where the image can never own PID 1.
 #
 # Build:
-#   docker build -f Dockerfile.anynines -t mmcen/hermes-anynines:anynines .
+#   docker build --build-arg BASE_IMAGE=mmcen/hermes-anynines:latest \
+#     -f Dockerfile.anynines -t mmcen/hermes-anynines:anynines .
 #
 # Push (requires Docker Hub access to the mmcen org):
 #   docker push mmcen/hermes-anynines:anynines
 #
 # For GitHub Actions build+push, see .github/workflows/docker-anynines.yml.
+# The workflow pins the base by digest (build-base job output) and passes
+# it here via --build-arg, so this wrapper is always built against the
+# exact base image just pushed — no drifting `:latest`.
 
-FROM mmcen/hermes-anynines:latest
+# BASE_IMAGE is pinned by digest in CI (see workflow); default to :latest
+# for ad-hoc local builds.
+ARG BASE_IMAGE=mmcen/hermes-anynines:latest
+FROM ${BASE_IMAGE}
 
-COPY docker/entrypoint-anynines.sh /opt/hermes/docker/entrypoint-anynines.sh
+# --chmod=0755 bakes the execute bit into the layer itself, so the
+# entrypoint survives regardless of the source file's mode bits.
+COPY --chmod=0755 docker/entrypoint-anynines.sh /opt/hermes/docker/entrypoint-anynines.sh
 RUN chmod +x /opt/hermes/docker/entrypoint-anynines.sh
 
 ENTRYPOINT ["/opt/hermes/docker/entrypoint-anynines.sh"]
