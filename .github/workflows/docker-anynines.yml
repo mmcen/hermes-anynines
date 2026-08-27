@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: mmcen/hermes-agent
+  IMAGE_NAME: mmcen/hermes-anynines
 
 jobs:
   build-anynines:

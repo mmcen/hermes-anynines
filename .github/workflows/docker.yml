@@ -27,7 +27,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: mmcen/hermes-agent
+  IMAGE_NAME: mmcen/hermes-anynines
 
 jobs:
   # Classify the PR's changed files. ci.yml used to gate the docker call on
