@@ -2,7 +2,12 @@
 
 > 最后更新：2026-09-15
 > 状态：✅ 已部署并验证（s6 监督 + 崩溃自愈 + Telegram 连通）
-> 适用账号：`anyuan33@auaa.ccwu.cc`（历史：anyuan22 → anyuan33）
+> 已部署账号：
+>
+> | 账号 | org / space | 模式 | 备注 |
+> |---|---|---|---|
+> | `anyuan33@auaa.ccwu.cc` | `anyuan33_auaa_ccwu_cc` / `production` | **root 模式** | 无 route |
+> | `anyuan@auaa.ccwu.cc` | `anyuan_auaa_ccwu_cc` / `test` | **root 模式** | 保留 route（旧部署原地升级） |
 
 ---
 
