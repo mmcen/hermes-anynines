@@ -113,7 +113,36 @@ s6 help                 帮助
 
 ---
 
-## 4. 环境变量清单
+## 4. 会话环境：ssh 里直接可用 `hermes` / `s6`
+
+**问题**：CF 的 diego-sshd 给 ssh 会话的是最小 PATH（`/bin:/usr/bin`），
+并且**不传应用 env** —— 所以在 `cf ssh`（或镜像自带 sshd）里 `hermes`/`s6`
+找不到，`HERMES_HOME` 也是空的，必须每次手工
+`export PATH=/opt/hermes/.venv/bin:$PATH`。
+
+**修复**（镜像已内置）：entrypoint 启动时把会话环境发布到各会话类型真正读取的位置：
+
+| 位置 | 覆盖的会话类型 |
+|---|---|
+| `/run/hermes-anynines/env.sh`（启动时生成） | 被下面两个钩子 source |
+| `/etc/profile.d/00-hermes-anynines.sh` | 登录 shell（ssh 交互） |
+| `/etc/bash.bashrc` | 交互式非登录 bash |
+| `/etc/environment` | PAM（pam_env）会话，如镜像自带 sshd |
+| `/usr/bin/hermes`、`/usr/bin/s6` 符号链接 | 非交互 `cf ssh -c …` / `ssh host cmd`（不读任何启动文件） |
+
+其中 `hermes` 链接在 **root 模式指向 venv 二进制**（与以 root 运行的 gateway 一致），
+非 root 模式指向官方的**降权 shim**（`/opt/hermes/bin/hermes`，root 调用时自动
+`setuidgid hermes`，避免产生 root 属主的状态文件）。会话里还会导出
+`HERMES_HOME`，CLI 因此指向正确的状态目录。
+
+验证：
+
+```sh
+cf ssh <app> -c 'command -v hermes s6; hermes --version'   # 非交互
+cf ssh <app> -c 'sh -l -c "command -v hermes"'             # 登录 shell
+```
+
+## 5. 环境变量清单
 
 | 变量 | 值（示例） | 用途 |
 |---|---|---|
@@ -165,7 +194,7 @@ root 模式的两个注意点：
 
 ---
 
-## 5. 部署 manifest（`manifest-anyuan33.yml`）
+## 6. 部署 manifest（`manifest-anyuan33.yml`）
 
 ```yaml
 applications:
@@ -196,7 +225,7 @@ command 一行即可——侧服务与监督逻辑全在镜像内，**不要**�
 
 ---
 
-## 6. 部署步骤
+## 7. 部署步骤
 
 ```sh
 # 1. 登录（cf login 在本平台可能超时；UAA 手动方式见第 9 节）
@@ -216,7 +245,7 @@ cf ssh hermes-agent-docker -c "s6 status"
 
 ---
 
-## 7. 验证 & 运维
+## 8. 验证 & 运维
 
 ```sh
 # 服务状态
@@ -241,7 +270,7 @@ cf ssh hermes-agent-docker -c "s6 restart all"
 
 ---
 
-## 8. 镜像更新流程
+## 9. 镜像更新流程
 
 ```sh
 # 1. 改 mmcen/hermes-anynines 仓库代码 → push main
@@ -261,7 +290,7 @@ workflow 为自包含两阶段：base 按 **digest** 传给 wrapper（`--build-a
 
 ---
 
-## 9. 常见问题
+## 10. 常见问题
 
 | 症状 | 原因 | 处理 |
 |---|---|---|
@@ -271,6 +300,7 @@ workflow 为自包含两阶段：base 按 **digest** 传给 wrapper（`--build-a
 | 只有 gateway 在跑 | `S6_KEEP_ENV` 未生效（旧镜像） | 升级镜像；不要自己拼 command |
 | cloudflared 以 root 运行 | 旧 `cloudflared/run` 降权 bug | 升级镜像 |
 | `No inference provider configured` | 缺 LLM key | `s6 set NOUS_API_KEY=...` 然后 `s6 apply` |
+| ssh 里 `hermes`/`s6` 找不到，要手工 export PATH | CF 的 diego-sshd 只给最小 PATH 且不传应用 env | 已修复（第 4 节）；若仍出现，重新部署以更新镜像 |
 | `cf login` 卡死 | CLI 交互异常（UAA 正常） | 用 UAA password grant 手动写 `~/.cf/config.json` |
 | `Routes cannot be mapped…` | 默认 route 跨空间冲突 | `no-route: true` |
 
@@ -288,7 +318,7 @@ cf target -o <org> -s production
 
 ---
 
-## 10. 相关资源
+## 11. 相关资源
 
 - GitHub：`mmcen/hermes-anynines`（镜像构建源，main）
 - Docker Hub：`mmcen/hermes-anynines`
@@ -296,7 +326,7 @@ cf target -o <org> -s production
 - 关键文件：`docker/entrypoint-anynines.sh`、`docker/s6-anynines/service/*`、
   `docker/s6-anynines/bin/s6`、`Dockerfile.anynines`
 
-## 11. 已知遗留
+## 12. 已知遗留
 
 - ⚠️ **未配置推理 provider**：gateway 能收发 Telegram 消息，但回不了模型内容
   （`s6 doctor` 会提示 "provider keys: NONE"）。添加方式：
