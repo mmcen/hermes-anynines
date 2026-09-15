@@ -34,5 +34,23 @@ COPY --chmod=0755 docker/s6-anynines/lib.sh /opt/hermes/docker/s6-anynines/lib.s
 # Control & status menu, registered as the `s6` command.
 COPY --chmod=0755 docker/s6-anynines/bin/s6 /usr/local/bin/s6
 
+# Session environment for interactive shells. CF's diego-sshd hands ssh
+# sessions a minimal PATH (/bin:/usr/bin) and drops the application env, so
+# `hermes` and `s6` were not on PATH there. The entrypoint writes the real
+# values (HERMES_HOME, run mode) to /run/hermes-anynines/env.sh at boot; these
+# hooks make the session types read it. Non-interactive `cf ssh -c …` is
+# covered by the /usr/bin symlinks the entrypoint creates.
+COPY --chmod=0644 docker/s6-anynines/etc/session-env.sh /etc/hermes-anynines/session-env.sh
+RUN set -eux; \
+    printf '%s\n' \
+      '# hermes-agent-docker: session env (PATH, HERMES_HOME)' \
+      '[ -r /etc/hermes-anynines/session-env.sh ] && . /etc/hermes-anynines/session-env.sh' \
+      > /etc/profile.d/00-hermes-anynines.sh; \
+    chmod 0644 /etc/profile.d/00-hermes-anynines.sh; \
+    printf '\n%s\n%s\n' \
+      '# hermes-agent-docker: session env for interactive non-login shells' \
+      '[ -r /etc/hermes-anynines/session-env.sh ] && . /etc/hermes-anynines/session-env.sh' \
+      >> /etc/bash.bashrc
+
 ENTRYPOINT ["/opt/hermes/docker/entrypoint-anynines.sh"]
 CMD []
