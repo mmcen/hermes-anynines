@@ -6,8 +6,9 @@
 >
 > | 账号 | org / space | 模式 | 备注 |
 > |---|---|---|---|
-> | `anyuan33@auaa.ccwu.cc` | `anyuan33_auaa_ccwu_cc` / `production` | **root 模式** | 无 route |
-> | `anyuan@auaa.ccwu.cc` | `anyuan_auaa_ccwu_cc` / `test` | **root 模式** | 保留 route（旧部署原地升级） |
+> | `anyuan33@auaa.ccwu.cc` | `anyuan33_auaa_ccwu_cc` / `production` | **root 模式** | 无 route；HERMES_HOME=/root/.hermes |
+> | `anyuan@auaa.ccwu.cc` | `anyuan_auaa_ccwu_cc` / `test` | **root 模式** | 保留 route；HERMES_HOME=/root/.hermes |
+> | `anyuan22@auaa.ccwu.cc` | `anyuan22_auaa_ccwu_cc` / `production` | **root 模式** | 无 route；HERMES_HOME=默认 /opt/data |
 
 ---
 
