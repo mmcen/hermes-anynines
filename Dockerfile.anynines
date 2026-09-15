@@ -1,9 +1,9 @@
 # anynines / CloudFoundry adaption of the hermes-agent image.
 #
-# Thin wrapper image: keeps the stock mmcen/hermes-anynines runtime and s6
-# layout, only swaps the entrypoint for one that also boots the side
-# services (cloudflared / dashboard / sshd) under CF's diego runtime,
-# where the image can never own PID 1.
+# Thin wrapper image: keeps the stock runtime and s6-overlay layout, and
+# adds an entrypoint that supervises the side services (gateway /
+# cloudflared / dashboard / sshd) with a plain s6-svscan tree when the
+# platform owns PID 1 (CF diego/garden), plus an `s6` control menu.
 #
 # Build:
 #   docker build --build-arg BASE_IMAGE=mmcen/hermes-anynines:latest \
@@ -22,10 +22,16 @@
 ARG BASE_IMAGE=mmcen/hermes-anynines:latest
 FROM ${BASE_IMAGE}
 
-# --chmod=0755 bakes the execute bit into the layer itself, so the
-# entrypoint survives regardless of the source file's mode bits.
+# --chmod=0755 bakes the execute bit into the layer itself, so run scripts
+# and the entrypoint survive regardless of the source file's mode bits.
 COPY --chmod=0755 docker/entrypoint-anynines.sh /opt/hermes/docker/entrypoint-anynines.sh
 RUN chmod +x /opt/hermes/docker/entrypoint-anynines.sh
+
+# CF-mode service definitions, copied into a writable scan directory at boot.
+COPY --chmod=0755 docker/s6-anynines/service/ /opt/hermes/docker/s6-anynines/service/
+
+# Control & status menu, registered as the `s6` command.
+COPY --chmod=0755 docker/s6-anynines/bin/s6 /usr/local/bin/s6
 
 ENTRYPOINT ["/opt/hermes/docker/entrypoint-anynines.sh"]
 CMD []

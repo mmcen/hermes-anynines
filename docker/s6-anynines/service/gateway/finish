@@ -1,0 +1,17 @@
+#!/bin/sh
+# shellcheck shell=sh
+# Runs after the supervised gateway process exits (s6-supervise contract:
+# $1 = exit code, $2 = signal number when killed by a signal).
+#
+# We only record the event — returning 0 lets s6-supervise restart the
+# gateway (s6 throttles restarts to at most one per second, so a crash
+# loop stays cheap and visible in `s6 logs gateway` / `s6 doctor`).
+# A deliberate `s6 stop gateway` never reaches this script: it marks the
+# service wanted-down, so s6-supervise simply leaves it stopped.
+LOG="${HERMES_HOME:-/opt/data}/logs/gateway-crash.log"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+{
+    printf '%s gateway exited (code=%s signal=%s)\n' \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "${1:-?}" "${2:-?}"
+} >>"$LOG" 2>/dev/null || true
+exit 0

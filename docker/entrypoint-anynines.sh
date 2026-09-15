@@ -1,92 +1,159 @@
 #!/bin/sh
 # shellcheck shell=sh
-# anynines / CloudFoundry-specific container entrypoint.
+# ===========================================================================
+# anynines / CloudFoundry entrypoint for hermes-agent-docker.
 #
-# Why this exists:
-#   CF diego/garden always runs the container with its own init as PID 1
-#   (/tmp/garden-init) and executes the image command via `/bin/sh -c`,
-#   so the stock entrypoint-dispatch.sh NEVER gets PID 1. Its fallback
-#   branch skips the s6 supervision tree → cloudflared / dashboard /
-#   sshd never start, leaving only `hermes gateway run`.
+# Why this exists
+# ---------------
+# CF's diego/garden always runs the container with the platform's own init
+# as PID 1 (/tmp/garden-init) and starts the image command as a child, so
+# the stock entrypoint-dispatch.sh never owns PID 1. Its fallback branch
+# skips s6-overlay entirely, which used to leave cloudflared / dashboard /
+# sshd unsupervised (nohup'ed by hand, never restarted when they died).
 #
-# This wrapper preserves the stock behaviour in normal Docker (PID 1 →
-# /init) and, in the CF fallback case, manually backgrounds the three
-# side services by reusing the stock s6-rc.d run scripts, then hands
-# off to main-wrapper.sh exactly like the stock fallback does.
+# What this wrapper does
+# ----------------------
+#   PID 1 (plain Docker)  → hand over to s6-overlay's /init, exactly as the
+#                           stock image does. Unchanged behaviour.
+#   CF (not PID 1)        → run the stock stage2 bootstrap, assemble a small
+#                           s6 scan directory (gateway + enabled side
+#                           services) and run `s6-svscan` as the container's
+#                           main process. Every service is then supervised:
+#                           s6 restarts crashed ones automatically, and
+#                           `s6 start|stop|restart|status|logs` (see the `s6`
+#                           helper in /usr/local/bin) drives them by hand.
+#
+#   The gateway is supervised too, but its stdout flows through s6-supervise
+#   to the container log stream, so `cf logs` keeps working as before.
 #
 # Usage (CF manifest command):
 #   command: /opt/hermes/docker/entrypoint-anynines.sh gateway run
+# ===========================================================================
 
-set -e
+set -eu
 
 if [ "$$" -eq 1 ]; then
     exec /init /opt/hermes/docker/main-wrapper.sh "$@"
 fi
 
-echo "[hermes] [anynines] CF fallback (not PID 1): manual side-service bootstrap" >&2
-export PATH="/command:/package/admin/s6/command:${PATH}"
+SCANDIR=/run/s6-anynines/service
+SRC=/opt/hermes/docker/s6-anynines/service
+DATA="${HERMES_HOME:-/opt/data}"
+LOGDIR="$DATA/logs"
 
-# CF fallback: /init never runs here, so /run/s6/container_environment only
-# holds the tiny stage2-hook seed — not the CF-injected env (TUNNEL_TOKEN,
-# SSH_ENABLED, HERMES_DASHBOARD_*, ...). `with-contenv` would then wipe the
-# process env and re-seed from that near-empty dir, silently disabling all
-# side services (only `hermes gateway run` would survive). Ask with-contenv
-# to keep the current environment instead; this mirrors normal s6-overlay
-# behaviour where /init already populated container_environment from the
-# same process env we launch with. See also the S6_KEEP_ENV contract in
-# s6-overlay's with-contenv.
+echo "[hermes] [anynines] CF fallback (not PID 1): s6-supervised services" >&2
+export PATH="/command:/package/admin/s6/command:/usr/local/bin:${PATH}"
+
+# /init never ran here, so /run/s6/container_environment holds only the tiny
+# stage2-hook seed rather than the CF-injected environment. Tell with-contenv
+# to keep the process environment instead of re-seeding from that near-empty
+# directory — otherwise every s6-rc.d/*/run script sees an empty
+# TUNNEL_TOKEN / SSH_ENABLED / HERMES_DASHBOARD_* and disables itself.
 export S6_KEEP_ENV=1
 
-# Stock root bootstrap: UID/GID remap, volume chown, config seeding,
+# Stock root bootstrap: UID/GID remap, data-dir ownership, config seeding,
 # skills sync (same as the official non-PID-1 fallback).
 /opt/hermes/docker/stage2-hook.sh
 
-mkdir -p /opt/data/logs
-chown -R hermes:hermes /opt/data 2>/dev/null || true
+mkdir -p "$LOGDIR"
+chown -R hermes:hermes "$DATA" 2>/dev/null || true
 
-# --- cloudflared ---
+# This platform has no persistence layer, so keep the data dir bounded:
+# truncate oversized logs at every boot.
+for f in "$LOGDIR"/*.log; do
+    [ -f "$f" ] || continue
+    sz=$(wc -c <"$f" 2>/dev/null || echo 0)
+    if [ "$sz" -gt 5242880 ]; then
+        : >"$f"
+        echo "[hermes] [anynines] truncated oversized log: $f" >&2
+    fi
+done
+
+# --- assemble the supervised scan directory ---------------------------------
+
+enable() {
+    # copy one service definition into the (writable, tmpfs) scan directory
+    s="$1"
+    [ -d "$SRC/$s" ] || { echo "[hermes] [anynines] service definition missing: $s" >&2; return 0; }
+    cp -R "$SRC/$s" "$SCANDIR/$s"
+    chmod 0755 "$SCANDIR/$s" 2>/dev/null || true
+    chmod 0755 "$SCANDIR/$s/run" 2>/dev/null || true
+    [ -f "$SCANDIR/$s/finish" ] && chmod 0755 "$SCANDIR/$s/finish" 2>/dev/null || true
+    return 0
+}
+
+rm -rf "$SCANDIR"
+mkdir -p "$SCANDIR"
+
+# The gateway is the application itself: always supervised, so a crash is
+# restarted in place instead of taking the whole container down.
+enable gateway
+
 if [ -n "${TUNNEL_TOKEN:-}" ]; then
-    (
-        cd /opt/data || exit 1
-        nohup /command/with-contenv sh /opt/hermes/docker/s6-rc.d/cloudflared/run \
-            > /opt/data/logs/cloudflared.log 2>&1 &
-    )
-    echo "[hermes] [anynines] cloudflared launched" >&2
+    enable cloudflared
 else
-    echo "[hermes] [anynines] TUNNEL_TOKEN unset, cloudflared skipped" >&2
+    echo "[hermes] [anynines] TUNNEL_TOKEN unset — cloudflared not supervised" >&2
 fi
 
-# --- dashboard ---
 case "${HERMES_DASHBOARD:-}" in
     1|true|TRUE|True|yes|YES|Yes)
-        (
-            cd /opt/data || exit 1
-            nohup /command/with-contenv sh /opt/hermes/docker/s6-rc.d/dashboard/run \
-                > /opt/data/logs/dashboard.log 2>&1 &
-        )
-        echo "[hermes] [anynines] dashboard launched" >&2
-        ;;
+        enable dashboard ;;
     *)
-        echo "[hermes] [anynines] HERMES_DASHBOARD unset/false, dashboard skipped" >&2
-        ;;
+        echo "[hermes] [anynines] HERMES_DASHBOARD off — dashboard not supervised" >&2 ;;
 esac
 
-# --- sshd ---
 case "${SSH_ENABLED:-}" in
     1|true|TRUE|True|yes|YES|Yes)
-        # CF holds port 2222 for its own diego-sshd, so default to 22.
+        # CF keeps port 2222 for its own diego-sshd, so default to 22.
         export SSH_PORT="${SSH_PORT:-22}"
-        (
-            cd /opt/data || exit 1
-            nohup /command/with-contenv sh /opt/hermes/docker/s6-rc.d/sshd/run \
-                > /opt/data/logs/sshd.log 2>&1 &
-        )
-        echo "[hermes] [anynines] sshd launched on ${SSH_PORT}" >&2
-        ;;
+        enable sshd ;;
     *)
-        echo "[hermes] [anynines] SSH_ENABLED unset/false, sshd skipped" >&2
-        ;;
+        echo "[hermes] [anynines] SSH_ENABLED off — sshd not supervised" >&2 ;;
 esac
 
-# Same hand-off as the stock fallback: route CMD args → `hermes <args>`.
-exec /opt/hermes/docker/main-wrapper.sh "$@"
+if [ ! -d "$SCANDIR/gateway" ]; then
+    echo "[hermes] [anynines] FATAL: gateway service definition not found under $SRC — failing so the platform surfaces the error" >&2
+    exit 1
+fi
+
+echo "[hermes] [anynines] supervised:$(for d in "$SCANDIR"/*; do [ -d "$d" ] && printf ' %s' "$(basename "$d")"; done)" >&2
+echo "[hermes] [anynines] starting s6-svscan (scandir=$SCANDIR)" >&2
+
+# --- supervise --------------------------------------------------------------
+# s6-svscan cannot own PID 1 under CF, so it runs as a child and we keep the
+# main process slot ourselves. That lets us handle the platform's SIGTERM:
+# every service is asked to stop (SIGTERM to longruns) before we exit, instead
+# of leaving orphans for the platform to SIGKILL.
+s6-svscan "$SCANDIR" &
+SVSCAN_PID=$!
+
+stop_all() {
+    trap '' TERM INT
+    echo "[hermes] [anynines] SIGTERM received — stopping supervised services" >&2
+    for d in "$SCANDIR"/*; do
+        [ -d "$d" ] || continue
+        s6-svc -d "$d" 2>/dev/null || true
+    done
+    # Give services a moment to exit, then take the supervision tree down.
+    i=0
+    while [ "$i" -lt 10 ]; do
+        alive=0
+        for d in "$SCANDIR"/*; do
+            [ -d "$d" ] || continue
+            s6-svstat -u "$d" >/dev/null 2>&1 && alive=1
+        done
+        [ "$alive" = 0 ] && break
+        i=$((i + 1))
+        sleep 1
+    done
+    s6-svscanctl -t "$SCANDIR" 2>/dev/null || true
+    wait "$SVSCAN_PID" 2>/dev/null || true
+    echo "[hermes] [anynines] shutdown complete" >&2
+    exit 0
+}
+
+trap stop_all TERM INT
+
+wait "$SVSCAN_PID" || true
+echo "[hermes] [anynines] s6-svscan exited — stopping container" >&2
+exit 1

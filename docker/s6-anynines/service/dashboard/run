@@ -1,0 +1,10 @@
+#!/bin/sh
+# shellcheck shell=sh
+# Hermes Web UI (dashboard) — supervised by s6 (anynines/CF fallback path).
+#
+# Reuses the stock s6-rc.d script: HERMES_DASHBOARD gate, HOME reset,
+# venv activation, root→hermes privilege drop, auth-provider checks.
+#
+# Output is captured to a file (see `s6 logs dashboard`).
+exec /command/with-contenv sh /etc/s6-overlay/s6-rc.d/dashboard/run \
+    >>"${HERMES_HOME:-/opt/data}/logs/dashboard.log" 2>&1

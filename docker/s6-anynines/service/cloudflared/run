@@ -1,0 +1,17 @@
+#!/bin/sh
+# shellcheck shell=sh
+# Cloudflare Tunnel — supervised by s6 (anynines/CF fallback path).
+#
+# Reuses the stock s6-rc.d script so behaviour is identical to the
+# s6-overlay (PID 1) path: with-contenv rehydration, root→hermes
+# privilege drop, and the TUNNEL_TOKEN guard that exits 0 (service
+# simply stays down) when no token is configured.
+#
+# The anynines entrypoint exports S6_KEEP_ENV=1, so with-contenv keeps
+# the CF-provided environment instead of re-seeding from the near-empty
+# /run/s6/container_environment directory.
+#
+# Output is captured to a file (there is no persistence layer on this
+# platform, so the entrypoint truncates oversized logs at boot).
+exec /command/with-contenv sh /etc/s6-overlay/s6-rc.d/cloudflared/run \
+    >>"${HERMES_HOME:-/opt/data}/logs/cloudflared.log" 2>&1

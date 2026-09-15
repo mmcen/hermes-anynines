@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docker/entrypoint-anynines.sh'
+      - 'docker/s6-anynines/**'
       - 'docker/s6-rc.d/cloudflared/run'
       - 'Dockerfile.anynines'
       - '.github/workflows/docker-anynines.yml'

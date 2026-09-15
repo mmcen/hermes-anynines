@@ -1,0 +1,19 @@
+#!/bin/sh
+# shellcheck shell=sh
+# hermes gateway — supervised by s6 (anynines/CF fallback path).
+#
+# Delegates to the stock main-wrapper.sh so the gateway inherits exactly
+# the same contract as the Docker CMD path: venv activation, HOME reset
+# to the data dir, `s6-setuidgid hermes` privilege drop, and CMD argument
+# routing.
+#
+# stdout/stderr are intentionally left alone: they flow through
+# s6-supervise to the container's stdout, so `cf logs` keeps showing
+# gateway traffic. Hermes additionally writes its own log file at
+# $HERMES_HOME/logs/gateway.log (see `s6 logs gateway`).
+#
+# Restart policy: s6-supervise restarts this service automatically when
+# it exits (throttled to 1 start/second). Use `s6 stop gateway` to take
+# it down deliberately — that marks the service "wanted down" and it
+# stays down until `s6 start gateway`.
+exec /opt/hermes/docker/main-wrapper.sh gateway run
