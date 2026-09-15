@@ -2,9 +2,32 @@
 # shellcheck shell=sh
 # Hermes Web UI (dashboard) — supervised by s6 (anynines/CF fallback path).
 #
-# Reuses the stock s6-rc.d script: HERMES_DASHBOARD gate, HOME reset,
-# venv activation, root→hermes privilege drop, auth-provider checks.
+# Default (non-root) mode reuses the stock s6-rc.d script: HERMES_DASHBOARD
+# gate, HOME reset, venv activation, root→hermes privilege drop, auth checks.
+#
+# Root mode (see lib.sh) runs the dashboard as root. This is required
+# alongside a root-mode gateway whenever HERMES_HOME points into /root (0700
+# root), because the hermes user cannot read that tree.
+#
+# The enable/disable decision is made by the entrypoint (it only copies this
+# service into the scan directory when HERMES_DASHBOARD is truthy), so there
+# is no gate to repeat here.
 #
 # Output is captured to a file (see `s6 logs dashboard`).
-exec /command/with-contenv sh /etc/s6-overlay/s6-rc.d/dashboard/run \
-    >>"${HERMES_HOME:-/opt/data}/logs/dashboard.log" 2>&1
+. /opt/hermes/docker/s6-anynines/lib.sh
+
+LOG="$(state_dir)/logs/dashboard.log"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+
+if root_mode; then
+    echo "[s6] dashboard: root mode, HERMES_HOME=$(state_dir)" >>"$LOG" 2>&1
+    cd "$(state_dir)" 2>/dev/null || cd /
+    # shellcheck disable=SC1091
+    . /opt/hermes/.venv/bin/activate
+    exec hermes dashboard \
+        --host "${HERMES_DASHBOARD_HOST:-0.0.0.0}" \
+        --port "${HERMES_DASHBOARD_PORT:-9119}" \
+        --no-open >>"$LOG" 2>&1
+fi
+
+exec /command/with-contenv sh /etc/s6-overlay/s6-rc.d/dashboard/run >>"$LOG" 2>&1

@@ -2,18 +2,38 @@
 # shellcheck shell=sh
 # hermes gateway — supervised by s6 (anynines/CF fallback path).
 #
-# Delegates to the stock main-wrapper.sh so the gateway inherits exactly
-# the same contract as the Docker CMD path: venv activation, HOME reset
-# to the data dir, `s6-setuidgid hermes` privilege drop, and CMD argument
-# routing.
+# Default (non-root) mode delegates to the stock main-wrapper.sh, so the
+# gateway inherits exactly the same contract as the Docker CMD path: venv
+# activation, HOME reset to the data dir, `s6-setuidgid hermes` privilege
+# drop, and CMD argument routing.
 #
-# stdout/stderr are intentionally left alone: they flow through
-# s6-supervise to the container's stdout, so `cf logs` keeps showing
-# gateway traffic. Hermes additionally writes its own log file at
-# $HERMES_HOME/logs/gateway.log (see `s6 logs gateway`).
+# Root mode (see lib.sh) starts the gateway directly as root instead. That
+# bypasses main-wrapper's privilege drop on purpose, which is why it must be
+# an explicit opt-in: root-owned files in $HERMES_HOME can break later
+# non-root runs, and the gateway gets the container's full privileges.
 #
-# Restart policy: s6-supervise restarts this service automatically when
-# it exits (throttled to 1 start/second). Use `s6 stop gateway` to take
-# it down deliberately — that marks the service "wanted down" and it
-# stays down until `s6 start gateway`.
+# HERMES_S6_SUPERVISED_CHILD marks the process as supervisor-owned so hermes
+# skips its "another gateway is already running" guard and routes restarts
+# through the exit path that s6 turns into a respawn.
+#
+# stdout/stderr are left alone: they flow through s6-supervise to the
+# container's stdout, so `cf logs` keeps showing gateway traffic. Hermes
+# additionally writes $HERMES_HOME/logs/gateway.log (see `s6 logs gateway`).
+#
+# Restart policy: s6-supervise restarts this service when it exits (throttled
+# to 1 start/second). `s6 stop gateway` marks it wanted-down so it stays down.
+. /opt/hermes/docker/s6-anynines/lib.sh
+
+export HERMES_S6_SUPERVISED_CHILD=1
+
+if root_mode; then
+    echo "[s6] gateway: root mode, HERMES_HOME=$(state_dir)" >&2
+    export HERMES_ALLOW_ROOT_GATEWAY="${HERMES_ALLOW_ROOT_GATEWAY:-1}"
+    mkdir -p "$(state_dir)" 2>/dev/null || true
+    cd "$(state_dir)" 2>/dev/null || cd /
+    # shellcheck disable=SC1091
+    . /opt/hermes/.venv/bin/activate
+    exec hermes gateway run
+fi
+
 exec /opt/hermes/docker/main-wrapper.sh gateway run

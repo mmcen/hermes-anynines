@@ -29,6 +29,7 @@ RUN chmod +x /opt/hermes/docker/entrypoint-anynines.sh
 
 # CF-mode service definitions, copied into a writable scan directory at boot.
 COPY --chmod=0755 docker/s6-anynines/service/ /opt/hermes/docker/s6-anynines/service/
+COPY --chmod=0755 docker/s6-anynines/lib.sh /opt/hermes/docker/s6-anynines/lib.sh
 
 # Control & status menu, registered as the `s6` command.
 COPY --chmod=0755 docker/s6-anynines/bin/s6 /usr/local/bin/s6

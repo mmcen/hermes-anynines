@@ -44,6 +44,9 @@ LOGDIR="$DATA/logs"
 echo "[hermes] [anynines] CF fallback (not PID 1): s6-supervised services" >&2
 export PATH="/command:/package/admin/s6/command:/usr/local/bin:${PATH}"
 
+# shellcheck disable=SC1091
+. /opt/hermes/docker/s6-anynines/lib.sh
+
 # /init never ran here, so /run/s6/container_environment holds only the tiny
 # stage2-hook seed rather than the CF-injected environment. Tell with-contenv
 # to keep the process environment instead of re-seeding from that near-empty
@@ -55,8 +58,12 @@ export S6_KEEP_ENV=1
 # skills sync (same as the official non-PID-1 fallback).
 /opt/hermes/docker/stage2-hook.sh
 
+if root_mode; then
+    echo "[hermes] [anynines] ROOT MODE: hermes processes run as root (HERMES_HOME=$DATA)" >&2
+else
+    chown -R hermes:hermes "$DATA" 2>/dev/null || true
+fi
 mkdir -p "$LOGDIR"
-chown -R hermes:hermes "$DATA" 2>/dev/null || true
 
 # This platform has no persistence layer, so keep the data dir bounded:
 # truncate oversized logs at every boot.

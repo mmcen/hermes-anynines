@@ -76,7 +76,27 @@ svc_state() {
     s6-svstat "$d" 2>&1 | head -n 1
 }
 
+proc_owner() {
+    # login name of the process s6 currently runs for a service
+    pid="$(s6-svstat -o pid "$SCANDIR/$1" 2>/dev/null)"
+    case "$pid" in ''|*[!0-9]*) printf -- '-'; return ;; esac
+    uid="$(awk '/^Uid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
+    [ -n "$uid" ] || { printf -- '-'; return; }
+    name="$(awk -F: -v u="$uid" '$3==u{print $1; exit}' /etc/passwd 2>/dev/null)"
+    printf '%s' "${name:-uid:$uid}"
+}
+
 is_up() { s6-svstat -u "$SCANDIR/$1" >/dev/null 2>&1; }
+
+run_mode_label() {
+    [ -d "$SCANDIR/gateway" ] || { printf 'n/a (gateway not supervised)'; return; }
+    o="$(proc_owner gateway)"
+    case "$o" in
+        root) printf 'root (opt-in, HERMES_ALLOW_ROOT_GATEWAY)' ;;
+        hermes) printf 'hermes (privilege drop via main-wrapper)' ;;
+        *) printf 'unknown (gateway not running)' ;;
+    esac
+}
 
 require_s6() {
     command -v s6-svscan >/dev/null 2>&1 ||
@@ -110,10 +130,12 @@ cmd_status() {
         printf '  %-13s %s\n' "(none)" "scandir missing — not started in CF mode?"
         return
     fi
+    printf '  %-12s %-6s %s\n' "service" "owner" "state"
     for s in $KNOWNSVC; do
-        printf '  %-13s %s\n' "$s" "$(svc_state "$s")"
+        printf '  %-12s %-6s %s\n' "$s" "$(proc_owner "$s")" "$(svc_state "$s")"
     done
     printf '\n'
+    printf '  mode            %s\n' "$(run_mode_label)"
     printf '  provider key    %s\n' \
         "$(for k in NOUS_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY; do
               v="$(env_value "$k")"; [ -n "$v" ] && { printf '%s' "$k"; break; }; done)"
@@ -179,6 +201,7 @@ cmd_conf() {
     printf '\ns6 configuration\n'
     printf '──────────────────────────────────────────────────────────\n'
     printf '  %-32s %s\n' "HERMES_HOME" "$HERMES_HOME"
+    printf '  %-32s %s\n' "run mode" "$(run_mode_label)"
     printf '  %-32s %s\n' "data dir writable" "$([ -w "$HERMES_HOME" ] && echo yes || echo NO)"
     printf '  %-32s %s\n' "config.yaml" "$([ -f "$HERMES_HOME/config.yaml" ] && echo "$HERMES_HOME/config.yaml" || echo '(none)')"
     printf '  %-32s %s\n' ".env" "$([ -f "$ENVFILE" ] && echo "$ENVFILE" || echo '(none)')"
@@ -221,10 +244,12 @@ cmd_set() {
     tmp="$ENVFILE.s6.$$"
     grep -v "^[[:space:]]*$key=" "$ENVFILE" >"$tmp" 2>/dev/null || true
     printf '%s=%s\n' "$key" "$val" >>"$tmp"
-    chown hermes:hermes "$tmp" 2>/dev/null || true
+    # Match the data dir's owner (hermes on /opt/data, root in root mode)
+    # instead of hardcoding a user.
+    chown --reference="$HERMES_HOME" "$tmp" 2>/dev/null || true
     chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$ENVFILE"
-    chown hermes:hermes "$ENVFILE" 2>/dev/null || true
+    chown --reference="$HERMES_HOME" "$ENVFILE" 2>/dev/null || true
     printf 's6: %s saved to %s\n' "$key" "$ENVFILE"
     hint "apply with: s6 apply    (restarts the gateway)"
 }
@@ -235,7 +260,7 @@ cmd_unset() {
     [ -f "$ENVFILE" ] || die "no $ENVFILE"
     tmp="$ENVFILE.s6.$$"
     grep -v "^[[:space:]]*$key=" "$ENVFILE" >"$tmp" 2>/dev/null || true
-    chown hermes:hermes "$tmp" 2>/dev/null || true
+    chown --reference="$HERMES_HOME" "$tmp" 2>/dev/null || true
     chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$ENVFILE"
     printf 's6: %s removed from %s\n' "$key" "$ENVFILE"
@@ -271,10 +296,12 @@ cmd_doctor() {
         printf '  %-26s %s\n' "scandir" "MISSING ($SCANDIR)"
     fi
     printf '\n'
+    printf '  %-12s %-6s %s\n' "service" "owner" "state"
     for s in $KNOWNSVC; do
-        [ -d "$SCANDIR/$s" ] && printf '  %-13s %s\n' "$s" "$(svc_state "$s")"
+        [ -d "$SCANDIR/$s" ] && printf '  %-12s %-6s %s\n' "$s" "$(proc_owner "$s")" "$(svc_state "$s")"
     done
-    printf '\n'
+    printf '\n  %-26s %s\n' "run mode" "$(run_mode_label)"
+    printf '  %-26s %s\n' "HERMES_HOME" "$HERMES_HOME"
     printf '  %-26s %s\n' "HERMES_HOME writable" "$([ -w "$HERMES_HOME" ] && echo yes || echo NO)"
     printf '  %-26s %s\n' "net egress" "$(net_probe && echo ok || echo 'check failed')"
     df -h "$HERMES_HOME" 2>/dev/null | tail -n 1 | awk '{printf "  %-26s %s used of %s (%s)\n", "disk", $3, $2, $5}'

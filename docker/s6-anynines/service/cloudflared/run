@@ -4,14 +4,19 @@
 #
 # Reuses the stock s6-rc.d script so behaviour is identical to the
 # s6-overlay (PID 1) path: with-contenv rehydration, root→hermes
-# privilege drop, and the TUNNEL_TOKEN guard that exits 0 (service
-# simply stays down) when no token is configured.
+# privilege drop, and the TUNNEL_TOKEN guard that exits 0 (service stays
+# down) when no token is configured. The tunnel never touches $HERMES_HOME,
+# so it keeps running as hermes even in root mode.
 #
-# The anynines entrypoint exports S6_KEEP_ENV=1, so with-contenv keeps
-# the CF-provided environment instead of re-seeding from the near-empty
+# The anynines entrypoint exports S6_KEEP_ENV=1, so with-contenv keeps the
+# CF-provided environment instead of re-seeding from the near-empty
 # /run/s6/container_environment directory.
 #
-# Output is captured to a file (there is no persistence layer on this
-# platform, so the entrypoint truncates oversized logs at boot).
-exec /command/with-contenv sh /etc/s6-overlay/s6-rc.d/cloudflared/run \
-    >>"${HERMES_HOME:-/opt/data}/logs/cloudflared.log" 2>&1
+# Output is captured to a file (no persistence layer on this platform; the
+# entrypoint truncates oversized logs at boot).
+. /opt/hermes/docker/s6-anynines/lib.sh
+
+LOG="$(state_dir)/logs/cloudflared.log"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+
+exec /command/with-contenv sh /etc/s6-overlay/s6-rc.d/cloudflared/run >>"$LOG" 2>&1

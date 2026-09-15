@@ -3,10 +3,14 @@
 # sshd — supervised by s6 (anynines/CF fallback path).
 #
 # Reuses the stock s6-rc.d script: host-key generation, authorized_keys
-# seeding from SSH_PUBLIC_KEY, and the port choice (defaults to 22 here;
-# 2222 belongs to the platform's own diego-sshd). sshd must keep root,
-# which the stock script handles.
+# seeding from SSH_PUBLIC_KEY (written for both root and hermes), and the
+# port choice (defaults to 22 here; 2222 belongs to the platform's own
+# diego-sshd). sshd must keep root, which the stock script handles.
 #
 # Output is captured to a file (see `s6 logs sshd`).
-exec /command/with-contenv sh /etc/s6-overlay/s6-rc.d/sshd/run \
-    >>"${HERMES_HOME:-/opt/data}/logs/sshd.log" 2>&1
+. /opt/hermes/docker/s6-anynines/lib.sh
+
+LOG="$(state_dir)/logs/sshd.log"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+
+exec /command/with-contenv sh /etc/s6-overlay/s6-rc.d/sshd/run >>"$LOG" 2>&1
