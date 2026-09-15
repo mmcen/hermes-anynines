@@ -8,7 +8,7 @@
 > |---|---|---|---|
 > | `anyuan33@auaa.ccwu.cc` | `anyuan33_auaa_ccwu_cc` / `production` | **root 模式** | 无 route；HERMES_HOME=/root/.hermes |
 > | `anyuan@auaa.ccwu.cc` | `anyuan_auaa_ccwu_cc` / `test` | **root 模式** | 保留 route；HERMES_HOME=/root/.hermes |
-> | `anyuan22@auaa.ccwu.cc` | `anyuan22_auaa_ccwu_cc` / `production` | **root 模式** | 无 route；HERMES_HOME=默认 /opt/data |
+> | `anyuan22@auaa.ccwu.cc` | `anyuan22_auaa_ccwu_cc` / `production` | **root 模式** | 无 route；HERMES_HOME=/root/.hermes |
 
 ---
 
