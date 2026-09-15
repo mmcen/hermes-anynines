@@ -54,6 +54,30 @@ export PATH="/command:/package/admin/s6/command:/usr/local/bin:${PATH}"
 # TUNNEL_TOKEN / SSH_ENABLED / HERMES_DASHBOARD_* and disables itself.
 export S6_KEEP_ENV=1
 
+# In root mode the stock bootstrap below still performs part of its work as
+# the 'hermes' user (config seeding, skills sync — see `as_hermes` in
+# stage2-hook.sh). When HERMES_HOME sits under a directory that user cannot
+# reach, those steps fail with EACCES and — because stage2 runs under `set -e`
+# — the bootstrap aborts and takes the container down with it (crash loop).
+#
+# That is exactly the case for HERMES_HOME=/root/.hermes: /root is 0700 root.
+# Make the ancestor chain reachable and hand the state dir to hermes; the
+# root-mode services can still write there.
+#
+# NOTE: /root needs 0755 here, not the 0711 that would normally be enough to
+# traverse a directory — on this platform's overlay (grootfs) the hermes user
+# cannot create entries under an execute-only /root.
+if root_mode; then
+    p="$DATA"
+    while :; do
+        p="$(dirname "$p")"
+        case "$p" in /|.|'') break ;; esac
+        chmod 0755 "$p" 2>/dev/null || true
+    done
+    mkdir -p "$DATA"
+    chown -R hermes:hermes "$DATA" 2>/dev/null || true
+fi
+
 # Stock root bootstrap: UID/GID remap, data-dir ownership, config seeding,
 # skills sync (same as the official non-PID-1 fallback).
 /opt/hermes/docker/stage2-hook.sh

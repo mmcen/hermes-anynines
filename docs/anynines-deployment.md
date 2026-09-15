@@ -125,15 +125,38 @@ s6 help                 帮助
 | `TELEGRAM_BOT_TOKEN` | `<bot token>` | Telegram bot |
 | `TELEGRAM_ALLOWED_USERS` | `8019081926` | Telegram 白名单 |
 | `NOUS_API_KEY` | （需自备） | 推理 provider（缺失则 gateway 无法回消息） |
+| `HERMES_ANYNINES_RUN_AS_ROOT` | `1` | 可选：启用 root 模式（详见下节） |
+| `HERMES_ALLOW_ROOT_GATEWAY` | `1` | 可选：root 模式下 hermes 自身要求的开关 |
+| `HERMES_HOME` | `/opt/data`（默认） | 状态目录；root 模式可设为 `/root/.hermes` |
 
-### ⚠️ HERMES_HOME 不要设成 `/root/.hermes`
+### HERMES_HOME 与 root 模式
 
-- 镜像默认 `HERMES_HOME=/opt/data`，**保持默认即可**。
-- `/root` 是 `0700 root`，而 gateway / dashboard 以 `hermes`(uid 10000) 运行，
-  **写不进去**（实测 `Permission denied`）。
-- 若确实想用 root 跑（不推荐）：需 `HERMES_ALLOW_ROOT_GATEWAY=1` **且** 让 gateway
-  与 dashboard 都绕过降权（`main-wrapper.sh` 会自动降权到 hermes），并接受
-  root 属主文件与官方镜像设计冲突的风险。本平台无持久层，收益几乎为零。
+默认是**非 root 模式**：镜像默认 `HERMES_HOME=/opt/data`，gateway/dashboard 通过
+`main-wrapper.sh` 降权到 `hermes`(uid 10000) 运行。这样最贴近官方设计，推荐。
+
+**root 模式（可选）** 让 gateway 与 dashboard 以 root 运行，用于状态目录必须放在
+只有 root 能到达的位置（例如 `/root/.hermes`）。启用方式（两个开关都要）：
+
+| 变量 | 作用 |
+|---|---|
+| `HERMES_ANYNINES_RUN_AS_ROOT=1` | 本镜像：gateway + dashboard 不再降权 |
+| `HERMES_ALLOW_ROOT_GATEWAY=1` | hermes 自身要求：euid==0 时否则拒绝启动 |
+| `HERMES_HOME=/root/.hermes` | 状态目录（root 可写） |
+
+root 模式的两个注意点：
+
+1. **`/root` 必须放开到 0755**。entrypoint 会自动做——因为 stage2 的配置播种/
+   skills 同步是**以 hermes 身份**执行的，而 `/root` 默认 0700 root，hermes 进不去
+   → 播种失败 → stage2 在 `set -e` 下中止 → 容器 crash 循环。
+   实测：只给 `o+x`（0711）**仍然失败**（本平台 overlay/grootfs 的限制），必须 0755。
+2. **属主会混合**。播种产物归 hermes，而 root 模式的服务写出的文件归 root。
+   entrypoint 每次启动会先把 `$HERMES_HOME` 递归 chown 给 hermes，让下一轮播种
+   正常工作，因此反复重启不会累积故障。
+3. cloudflared / sshd 不受影响（不读写 `HERMES_HOME`）。
+
+> 权衡：root 模式下 hermes 持有容器全部权限（面向聊天的 agent 是权限放大），
+> 且偏离官方的降权设计。本平台无持久层，`/opt/data` 与 `/root/.hermes` 在数据
+> 留存上没有区别——除非有明确理由，建议保持默认非 root 模式。
 
 ---
 
