@@ -114,16 +114,18 @@ chmod 0644 /run/hermes-anynines/env.sh 2>/dev/null || true
 printf 'PATH="%s"\nHERMES_HOME="%s"\n' "$SESSION_PATH" "$DATA" >/etc/environment 2>/dev/null || true
 
 ln -sf /usr/local/bin/s6 /usr/bin/s6 2>/dev/null || true
-# Always the stock privilege-drop shim. Invoked as root it re-execs as the
-# hermes user, so anything the CLI writes under $HERMES_HOME stays
-# hermes-owned — which is what the supervised gateway needs: it runs as hermes
-# on the PID-1 path and on non-root fallback deployments, and a root-owned
-# auth.json/.env there makes model resolution fail with PermissionError.
-# Root can read hermes-owned files, so this is also safe when the gateway
-# itself runs as root. (Linking straight to the venv binary in root mode was
-# the behaviour that produced root-owned state files and broke the bot.)
-# Opt out with HERMES_DOCKER_EXEC_AS_ROOT=1 if you really want a root CLI.
-ln -sf /opt/hermes/bin/hermes /usr/bin/hermes 2>/dev/null || true
+if root_mode; then
+    # Root mode ("root 到底"): the gateway and dashboard also run as root, so the
+    # session CLI must not drop either — gateway-written and CLI-written state
+    # then come from the same user and cannot lock each other out of
+    # $HERMES_HOME. (Linking at the venv binary while the *gateway* still dropped
+    # to hermes was the mix that broke model resolution, so the two must agree.)
+    ln -sf /opt/hermes/.venv/bin/hermes /usr/bin/hermes 2>/dev/null || true
+else
+    # Stock behaviour: the shim re-execs as hermes when invoked as root, so a
+    # root ssh session cannot leave root-owned files in a hermes-run home.
+    ln -sf /opt/hermes/bin/hermes /usr/bin/hermes 2>/dev/null || true
+fi
 echo "[hermes] [anynines] session PATH published (hermes, s6 reachable in ssh sessions)" >&2
 
 if [ "$$" -eq 1 ]; then

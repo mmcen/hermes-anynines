@@ -50,7 +50,17 @@ case "${HERMES_DASHBOARD_INSECURE:-}" in
         ;;
 esac
 
-# Skip the drop when already non-root.
-[ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open
-exec s6-setuidgid hermes hermes dashboard \
-    --host "$dash_host" --port "$dash_port" --no-open
+# Root mode (anynines): keep root so every writer of $HERMES_HOME — gateway,
+# dashboard, CLI — runs as the same user. Otherwise drop to hermes as the stock
+# image does (skipping the drop when already non-root).
+case "${HERMES_ANYNINES_RUN_AS_ROOT:-${HERMES_ALLOW_ROOT_GATEWAY:-}}" in
+    1|true|TRUE|True|yes|YES|Yes|on|ON)
+        ;;
+    *)
+        # Skip the drop when already non-root.
+        [ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open
+        exec s6-setuidgid hermes hermes dashboard \
+            --host "$dash_host" --port "$dash_port" --no-open
+        ;;
+esac
+exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open

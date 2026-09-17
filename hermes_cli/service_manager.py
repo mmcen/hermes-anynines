@@ -467,9 +467,24 @@ class S6ServiceManager:
             gateway_cmd = "hermes gateway run --replace"
         else:
             gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run --replace"
-        # Skip the drop when already non-root (setgroups() lacks CAP_SETGID → s6 boot-loop).
-        lines.append(f'[ "$(id -u)" = 0 ] || exec {gateway_cmd}')
-        lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")
+        # anynines patch — root mode. When the deployment asks for root
+        # (HERMES_ANYNINES_RUN_AS_ROOT=1, or the upstream
+        # HERMES_ALLOW_ROOT_GATEWAY=1) the supervised gateway keeps root instead
+        # of dropping to hermes, so the gateway, the dashboard and the CLI in
+        # ssh sessions all run as the same user and no root-owned file can lock
+        # a hermes-run gateway out of $HERMES_HOME. The run script rehydrates the
+        # container env via with-contenv, so this is decided at service start.
+        lines.append(
+            'case "${HERMES_ANYNINES_RUN_AS_ROOT:-${HERMES_ALLOW_ROOT_GATEWAY:-}}" in\n'
+            '    1|true|TRUE|True|yes|YES|Yes|on|ON)\n'
+            '        ;;   # root mode: keep root\n'
+            '    *)\n'
+            f'        # Skip the drop when already non-root (setgroups() lacks CAP_SETGID → s6 boot-loop).\n'
+            f'        if [ "$(id -u)" = 0 ]; then exec s6-setuidgid hermes {gateway_cmd}; fi\n'
+            '        ;;\n'
+            'esac'
+        )
+        lines.append(f"exec {gateway_cmd}")
         return "\n".join(lines) + "\n"
 
     @staticmethod
