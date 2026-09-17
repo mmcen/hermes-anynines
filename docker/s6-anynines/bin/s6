@@ -162,19 +162,37 @@ install_user_service() {
     s6-svc -u "$SCANDIR/$n" 2>/dev/null || true
 }
 
+# Single-quote a string so it survives being embedded in a generated script.
+quote_arg() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 # s6 add <name> [--root] -- <command...>
 #   registers a longrun service that s6 supervises (restart on crash) and that
 #   is restored automatically on the next container start. By default it runs
 #   as the hermes user; --root keeps root.
+#
+#   The command is stored as an argv list and run with `exec "$@"`, so quoting
+#   survives:
+#     s6 add web -- /usr/bin/python3 /opt/data/web.py --msg "hi there"
+#   Typing the command at the interactive prompt instead stores a shell snippet
+#   (`sh -c '<line>'`), which allows pipes and redirections.
 cmd_add() {
     require_s6
-    name=""; run_as_root=0; cmd=""
+    name=""; run_as_root=0; argv=""; shell_line=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --root) run_as_root=1 ;;
-            --) shift; cmd="$*"; break ;;
+            --shell) shift; shell_line="${1:-}" ;;
+            --)
+                shift
+                while [ $# -gt 0 ]; do
+                    argv="${argv:+$argv }$(quote_arg "$1")"
+                    shift
+                done
+                break ;;
             -h|--help) printf 'usage: s6 add <name> [--root] -- <command...>\n'; return 0 ;;
-            *) if [ -z "$name" ]; then name="$1"; else cmd="${cmd:+$cmd }$1"; fi ;;
+            *) if [ -z "$name" ]; then name="$1"; else argv="${argv:+$argv }$(quote_arg "$1")"; fi ;;
         esac
         shift
     done
@@ -185,12 +203,13 @@ cmd_add() {
     if is_builtin_service "$name"; then
         die "'$name' collides with a built-in service name"
     fi
-    if [ -z "$cmd" ]; then
-        printf '要守护的命令 (e.g. /usr/bin/myserver --port 8080): '
-        read -r cmd || true
+    if [ -z "$argv" ] && [ -z "$shell_line" ]; then
+        printf '要守护的命令 (shell 片段，可用管道/重定向): '
+        read -r shell_line || true
     fi
-    [ -n "$cmd" ] || die "no command given"
-    esc="$(printf '%s' "$cmd" | sed "s/'/'\\\\''/g")"
+    if [ -z "$argv" ] && [ -z "$shell_line" ]; then
+        die "no command given"
+    fi
     mkdir -p "$USER_SVC_DIR/$name" || die "cannot write $USER_SVC_DIR"
     {
         printf '#!/bin/sh\n'
@@ -198,13 +217,18 @@ cmd_add() {
         printf '# stored at %s/run; installed into %s at boot\n' "$USER_SVC_DIR/$name" "$SCANDIR"
         printf 'set -e\n'
         printf 'cd "%s" 2>/dev/null || true\n' "$HERMES_HOME"
+        if [ -n "$shell_line" ]; then
+            printf 'set -- sh -c %s\n' "$(quote_arg "$shell_line")"
+        else
+            printf 'set -- %s\n' "$argv"
+        fi
         if [ "$run_as_root" = 1 ]; then
-            printf "exec sh -c '%s'\n" "$esc"
+            printf 'exec "$@"\n'
         else
             printf 'if [ "$(id -u)" = 0 ]; then\n'
-            printf "    exec s6-setuidgid hermes sh -c '%s'\n" "$esc"
+            printf '    exec s6-setuidgid hermes "$@"\n'
             printf 'fi\n'
-            printf "exec sh -c '%s'\n" "$esc"
+            printf 'exec "$@"\n'
         fi
     } >"$USER_SVC_DIR/$name/run"
     chmod 0755 "$USER_SVC_DIR/$name" "$USER_SVC_DIR/$name/run" 2>/dev/null || true
@@ -539,7 +563,9 @@ s6 — service control & configuration menu (hermes-agent-docker / anynines)
                            tail a service log; also: errors, gateway-crash
   s6 add     <name> [--root] -- <command...>
                            register a custom service that s6 supervises
-                           (restart on crash, re-installed automatically at boot)
+                           (restart on crash, re-installed automatically at boot).
+                           Arguments after -- are stored verbatim as an argv list;
+                           use --shell '<line>' for pipelines/redirection
   s6 rm      <name>        stop and delete a custom service
   s6 conf                  effective configuration (secrets masked)
   s6 set     KEY=VALUE     add/update a setting in $HERMES_HOME/.env
@@ -608,7 +634,7 @@ EOF
                 [ -n "$n" ] || continue
                 printf '要守护的命令: '
                 read -r c || break
-                [ -n "$c" ] && cmd_add "$n" -- $c
+                [ -n "$c" ] && cmd_add "$n" --shell "$c"
                 ;;
             d|D)
                 printf '服务名: '

@@ -130,6 +130,17 @@ s6 logs webhook 40 -f        # 日志（run 脚本的输出按需重定向到 $H
 s6 rm webhook                # 停止并删除
 ```
 
+命令行形式与引号规则：
+
+| 形式 | 语义 |
+|---|---|
+| `s6 add <name> [--root] -- <argv...>` | 参数**原样保存**为 argv 列表，用 `exec "$@"` 执行（引号/空格不会被拍平），例如 `-- /bin/echo "hello   world"` |
+| `s6 add <name> --shell '<line>'` | 以 **shell 片段**执行（`sh -c '<line>'`），支持管道/重定向 |
+| 菜单里 `a) 添加自定义服务` | 输入的命令按 shell 片段处理（可用管道） |
+
+> 自定义服务的输出直接进容器日志流（Railway Logs / `cf logs`），不写 `$HERMES_HOME/logs/*.log`；
+> 需要落文件就在命令里自己重定向（`--shell '... >> /opt/data/webhook.log 2>&1'`）。
+
 - 定义持久化在 `$HERMES_HOME/s6-services/<name>/run`；启动时自动重新安装：
   CF fallback 路径由 `entrypoint-anynines.sh` 负责，PID-1 路径由
   `/etc/cont-init.d/05-anynines-user-services` 负责（s6-overlay 的 cont-init 在
