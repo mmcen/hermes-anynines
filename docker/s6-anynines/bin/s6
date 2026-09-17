@@ -23,11 +23,42 @@
 #    s6 help                this text
 # ===========================================================================
 
-SCANDIR="${S6_SCANDIR:-/run/s6-anynines/service}"
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 LOGDIR="$HERMES_HOME/logs"
 ENVFILE="$HERMES_HOME/.env"
 KNOWNSVC="gateway cloudflared dashboard sshd"
+
+# --- locate the supervision tree -------------------------------------------
+# Two layouts exist and this menu must work in both:
+#   * CF / non-PID-1 fallback → /run/s6-anynines/service, assembled by
+#     entrypoint-anynines.sh (gateway is a supervised service there).
+#   * PID-1 platforms (plain Docker, Railway, Fly …) → s6-overlay owns the
+#     tree; live service dirs sit under /run/service and hermes registers the
+#     gateway itself as `gateway-<profile>`.
+# Pick the first candidate that actually holds service slots we recognise.
+detect_scandir() {
+    if [ -n "${S6_SCANDIR:-}" ] && [ -d "$S6_SCANDIR" ]; then
+        printf '%s' "$S6_SCANDIR"
+        return
+    fi
+    for d in /run/s6-anynines/service /run/hermes-s6/service /run/service /run/s6-rc/servicedirs; do
+        [ -d "$d" ] || continue
+        for cand in "$d"/*; do
+            [ -d "$cand" ] || continue
+            case "$(basename "$cand")" in
+                gateway|gateway-*|cloudflared|dashboard|sshd|main-hermes)
+                    printf '%s' "$d"
+                    return ;;
+            esac
+        done
+    done
+    for d in /run/s6-anynines/service /run/hermes-s6/service /run/service; do
+        [ -d "$d" ] && { printf '%s' "$d"; return; }
+    done
+    printf '%s' /run/service
+}
+
+SCANDIR="$(detect_scandir)"
 
 PATH="/command:/package/admin/s6/command:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 export PATH
@@ -66,6 +97,28 @@ enabled_services() {
     done
 }
 
+# Only the services this image ships (plus hermes' own gateway slots) — the
+# s6-overlay tree on PID-1 platforms also holds internals like base,
+# fix-attrs, legacy-cont-init, s6rc-oneshot-runner, which would drown the table.
+hermes_services() {
+    for s in $(enabled_services); do
+        case "$s" in
+            gateway|gateway-*|cloudflared|dashboard|sshd|main-hermes) printf '%s\n' "$s" ;;
+        esac
+    done
+}
+
+other_services_count() {
+    n=0
+    for s in $(enabled_services); do
+        case "$s" in
+            gateway|gateway-*|cloudflared|dashboard|sshd|main-hermes) ;;
+            *) n=$((n + 1)) ;;
+        esac
+    done
+    printf '%s' "$n"
+}
+
 targets_of() {
     if [ "$1" = "all" ]; then enabled_services; else printf '%s\n' "$1"; fi
 }
@@ -88,10 +141,26 @@ proc_owner() {
 
 is_up() { s6-svstat -u "$SCANDIR/$1" >/dev/null 2>&1; }
 
+# Name of the gateway's service slot in this layout, if any. The CF fallback
+# names it `gateway`; on PID-1 platforms hermes registers the gateway in the
+# s6-overlay tree as `gateway-<profile>` instead.
+gateway_service() {
+    [ -d "$SCANDIR" ] || return 1
+    for cand in "$SCANDIR"/gateway "$SCANDIR"/gateway-*; do
+        [ -d "$cand" ] || continue
+        basename "$cand"
+        return 0
+    done
+    return 1
+}
+
 run_mode_label() {
-    [ -d "$SCANDIR/gateway" ] || { printf 'n/a (gateway not supervised)'; return; }
-    o="$(proc_owner gateway)"
-    case "$o" in
+    gw="$(gateway_service 2>/dev/null || true)"
+    if [ -z "$gw" ]; then
+        printf 'gateway runs as the container main process (no gateway slot here)'
+        return
+    fi
+    case "$(proc_owner "$gw")" in
         root) printf 'root (opt-in, HERMES_ALLOW_ROOT_GATEWAY)' ;;
         hermes) printf 'hermes (privilege drop via main-wrapper)' ;;
         *) printf 'unknown (gateway not running)' ;;
@@ -127,23 +196,33 @@ cmd_status() {
     printf '\ns6 service status  (scandir=%s)\n' "$SCANDIR"
     printf '──────────────────────────────────────────────────────────\n'
     if [ ! -d "$SCANDIR" ]; then
-        printf '  %-13s %s\n' "(none)" "scandir missing — not started in CF mode?"
+        printf '  %-12s %s\n' "(none)" "scandir missing — is the container running?"
         return
     fi
-    printf '  %-12s %-6s %s\n' "service" "owner" "state"
-    for s in $KNOWNSVC; do
-        printf '  %-12s %-6s %s\n' "$s" "$(proc_owner "$s")" "$(svc_state "$s")"
+    printf '  %-16s %-6s %s\n' "service" "owner" "state"
+    any=0
+    for s in $(hermes_services); do
+        printf '  %-16s %-6s %s\n' "$s" "$(proc_owner "$s")" "$(svc_state "$s")"
+        any=1
     done
+    [ "$any" = 0 ] && printf '  %-16s %s\n' "(nothing)" "no supervised services found"
+    for s in $KNOWNSVC; do
+        [ -d "$SCANDIR/$s" ] || printf '  %-16s %-6s %s\n' "$s" "-" "not supervised here (disabled, or handled by the platform)"
+    done
+    if [ "$(other_services_count)" != 0 ]; then
+        printf '  %-16s %s\n' "(+$(other_services_count))" "s6-overlay internal services not listed"
+    fi
     printf '\n'
     printf '  mode            %s\n' "$(run_mode_label)"
     printf '  provider key    %s\n' \
         "$(for k in NOUS_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY; do
               v="$(env_value "$k")"; [ -n "$v" ] && { printf '%s' "$k"; break; }; done)"
     printf '  logs            %s   (s6 logs <service>)\n' "$LOGDIR"
-    if [ -d "$SCANDIR/gateway" ] && ! is_up gateway; then
+    gw="$(gateway_service 2>/dev/null || true)"
+    if [ -n "$gw" ] && ! is_up "$gw"; then
         printf '\n'
-        hint "gateway is NOT up — check: s6 logs gateway"
-        hint "crash history: s6 logs errors   /   tail $LOGDIR/gateway-crash.log"
+        hint "$gw is NOT up — check: s6 logs gateway"
+        hint "crash history: tail $LOGDIR/gateway-crash.log"
     fi
 }
 
@@ -269,9 +348,17 @@ cmd_unset() {
 
 cmd_apply() {
     require_s6
-    [ -d "$SCANDIR/gateway" ] || die "gateway service not found in $SCANDIR"
-    printf 's6: restarting gateway to apply configuration...\n'
-    if is_up gateway; then s6-svc -t "$SCANDIR/gateway"; else s6-svc -u "$SCANDIR/gateway"; fi
+    printf 's6: applying configuration — restarting the gateway...\n'
+    gw="$(gateway_service 2>/dev/null || true)"
+    if [ -n "$gw" ]; then
+        if is_up "$gw"; then s6-svc -t "$SCANDIR/$gw"; else s6-svc -u "$SCANDIR/$gw"; fi
+    else
+        # PID-1 layout (e.g. Railway): hermes runs the gateway itself, so let
+        # the CLI do the restart instead of a service slot.
+        command -v hermes >/dev/null 2>&1 ||
+            die "no gateway service slot found in $SCANDIR and the hermes CLI is unavailable"
+        hermes gateway restart || die "hermes gateway restart failed"
+    fi
     sleep 4
     cmd_status
     printf '\n  recent gateway log:\n'
@@ -291,14 +378,14 @@ cmd_doctor() {
     printf '  %-26s %s\n' "svscan running" "$(pids="$(svscan_pids)"; [ -n "$pids" ] && echo "yes (pid ${pids% })" || echo NO)"
     if [ -d "$SCANDIR" ]; then
         printf '  %-26s %s\n' "scandir" "$SCANDIR"
-        printf '  %-26s %s\n' "supervised" "$(enabled_services | tr '\n' ' ')"
+        printf '  %-26s %s\n' "supervised" "$(hermes_services | tr '\n' ' ')"
     else
         printf '  %-26s %s\n' "scandir" "MISSING ($SCANDIR)"
     fi
     printf '\n'
-    printf '  %-12s %-6s %s\n' "service" "owner" "state"
-    for s in $KNOWNSVC; do
-        [ -d "$SCANDIR/$s" ] && printf '  %-12s %-6s %s\n' "$s" "$(proc_owner "$s")" "$(svc_state "$s")"
+    printf '  %-16s %-6s %s\n' "service" "owner" "state"
+    for s in $(hermes_services); do
+        printf '  %-16s %-6s %s\n' "$s" "$(proc_owner "$s")" "$(svc_state "$s")"
     done
     printf '\n  %-26s %s\n' "run mode" "$(run_mode_label)"
     printf '  %-26s %s\n' "HERMES_HOME" "$HERMES_HOME"
