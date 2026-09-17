@@ -32,20 +32,59 @@
 
 set -eu
 
-if [ "$$" -eq 1 ]; then
-    exec /init /opt/hermes/docker/main-wrapper.sh "$@"
-fi
-
 SCANDIR=/run/s6-anynines/service
 SRC=/opt/hermes/docker/s6-anynines/service
 DATA="${HERMES_HOME:-/opt/data}"
 LOGDIR="$DATA/logs"
 
-echo "[hermes] [anynines] CF fallback (not PID 1): s6-supervised services" >&2
-export PATH="/command:/package/admin/s6/command:/usr/local/bin:${PATH}"
-
 # shellcheck disable=SC1091
 . /opt/hermes/docker/s6-anynines/lib.sh
+
+# --- make the state dir usable by the runtime user --------------------------
+# The gateway runs as 'hermes' on both paths (the fallback path drops via
+# main-wrapper unless root mode is on; the PID-1 path always drops), and the
+# stock bootstrap also does part of its work as hermes (config seeding, skills
+# sync — see `as_hermes` in stage2-hook.sh). When HERMES_HOME sits under a
+# directory only root can traverse, all of that fails with EACCES:
+#   * fallback path: stage2 aborts under `set -e` → container crash loop
+#   * PID-1 path (Railway, plain Docker with a custom HERMES_HOME, any platform
+#     that mounts a persistent volume at /root/.hermes): cont-init fails and
+#     the gateway dies with
+#     `PermissionError: [Errno 13] Permission denied: '/root/.hermes/.env'`
+# The canonical trigger is HERMES_HOME=/root/.hermes, because /root is 0700
+# root. Only ancestors lacking other-execute are touched, so this is a no-op
+# for the common case (/opt/data).
+#
+# /root needs 0755 rather than the 0711 that would normally be enough to
+# traverse a directory: on this platform's overlay (grootfs) the hermes user
+# cannot create entries under an execute-only /root.
+prepare_state_dir() {
+    p="$DATA"
+    while :; do
+        p="$(dirname "$p")"
+        case "$p" in /|.|'') break ;; esac
+        mode="$(stat -c %a "$p" 2>/dev/null || echo '')"
+        case "$mode" in
+            *[1357]) ;;                         # already traversable (o+x)
+            '') ;;
+            *) chmod 0755 "$p" 2>/dev/null || true ;;
+        esac
+    done
+    mkdir -p "$DATA"
+    if [ "$(stat -c %u "$DATA" 2>/dev/null)" != "$(id -u hermes 2>/dev/null)" ]; then
+        echo "[hermes] [anynines] taking ownership of $DATA for hermes" >&2
+        chown -R hermes:hermes "$DATA" 2>/dev/null || true
+    fi
+}
+
+prepare_state_dir
+
+if [ "$$" -eq 1 ]; then
+    exec /init /opt/hermes/docker/main-wrapper.sh "$@"
+fi
+
+echo "[hermes] [anynines] CF fallback (not PID 1): s6-supervised services" >&2
+export PATH="/command:/package/admin/s6/command:/usr/local/bin:${PATH}"
 
 # /init never ran here, so /run/s6/container_environment holds only the tiny
 # stage2-hook seed rather than the CF-injected environment. Tell with-contenv
@@ -53,30 +92,6 @@ export PATH="/command:/package/admin/s6/command:/usr/local/bin:${PATH}"
 # directory — otherwise every s6-rc.d/*/run script sees an empty
 # TUNNEL_TOKEN / SSH_ENABLED / HERMES_DASHBOARD_* and disables itself.
 export S6_KEEP_ENV=1
-
-# In root mode the stock bootstrap below still performs part of its work as
-# the 'hermes' user (config seeding, skills sync — see `as_hermes` in
-# stage2-hook.sh). When HERMES_HOME sits under a directory that user cannot
-# reach, those steps fail with EACCES and — because stage2 runs under `set -e`
-# — the bootstrap aborts and takes the container down with it (crash loop).
-#
-# That is exactly the case for HERMES_HOME=/root/.hermes: /root is 0700 root.
-# Make the ancestor chain reachable and hand the state dir to hermes; the
-# root-mode services can still write there.
-#
-# NOTE: /root needs 0755 here, not the 0711 that would normally be enough to
-# traverse a directory — on this platform's overlay (grootfs) the hermes user
-# cannot create entries under an execute-only /root.
-if root_mode; then
-    p="$DATA"
-    while :; do
-        p="$(dirname "$p")"
-        case "$p" in /|.|'') break ;; esac
-        chmod 0755 "$p" 2>/dev/null || true
-    done
-    mkdir -p "$DATA"
-    chown -R hermes:hermes "$DATA" 2>/dev/null || true
-fi
 
 # Stock root bootstrap: UID/GID remap, data-dir ownership, config seeding,
 # skills sync (same as the official non-PID-1 fallback).
