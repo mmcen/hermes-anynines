@@ -71,8 +71,14 @@ prepare_state_dir() {
         esac
     done
     mkdir -p "$DATA"
-    if [ "$(stat -c %u "$DATA" 2>/dev/null)" != "$(id -u hermes 2>/dev/null)" ]; then
-        echo "[hermes] [anynines] taking ownership of $DATA for hermes" >&2
+    # Normalize ownership when the state dir itself OR a top-level entry is not
+    # hermes-owned: a root-run CLI (`hermes auth`, `hermes model`, …) can leave
+    # root-owned files behind, and the supervised gateway — which runs as
+    # hermes — then fails with PermissionError on auth.json/.env. Cheap
+    # -maxdepth 1 probe; the recursive chown only runs when needed.
+    if [ "$(stat -c %u "$DATA" 2>/dev/null)" != "$(id -u hermes 2>/dev/null)" ] ||
+        [ -n "$(find "$DATA" -maxdepth 1 ! -user hermes -print -quit 2>/dev/null)" ]; then
+        echo "[hermes] [anynines] normalizing ownership of $DATA for hermes" >&2
         chown -R hermes:hermes "$DATA" 2>/dev/null || true
     fi
 }
@@ -108,13 +114,16 @@ chmod 0644 /run/hermes-anynines/env.sh 2>/dev/null || true
 printf 'PATH="%s"\nHERMES_HOME="%s"\n' "$SESSION_PATH" "$DATA" >/etc/environment 2>/dev/null || true
 
 ln -sf /usr/local/bin/s6 /usr/bin/s6 2>/dev/null || true
-if root_mode; then
-    # the gateway itself runs as root, so keep the CLI consistent with it
-    ln -sf /opt/hermes/.venv/bin/hermes /usr/bin/hermes 2>/dev/null || true
-else
-    # stock behaviour: the shim drops to the hermes user before exec'ing
-    ln -sf /opt/hermes/bin/hermes /usr/bin/hermes 2>/dev/null || true
-fi
+# Always the stock privilege-drop shim. Invoked as root it re-execs as the
+# hermes user, so anything the CLI writes under $HERMES_HOME stays
+# hermes-owned — which is what the supervised gateway needs: it runs as hermes
+# on the PID-1 path and on non-root fallback deployments, and a root-owned
+# auth.json/.env there makes model resolution fail with PermissionError.
+# Root can read hermes-owned files, so this is also safe when the gateway
+# itself runs as root. (Linking straight to the venv binary in root mode was
+# the behaviour that produced root-owned state files and broke the bot.)
+# Opt out with HERMES_DOCKER_EXEC_AS_ROOT=1 if you really want a root CLI.
+ln -sf /opt/hermes/bin/hermes /usr/bin/hermes 2>/dev/null || true
 echo "[hermes] [anynines] session PATH published (hermes, s6 reachable in ssh sessions)" >&2
 
 if [ "$$" -eq 1 ]; then
