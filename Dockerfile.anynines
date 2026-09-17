@@ -34,6 +34,12 @@ COPY --chmod=0755 docker/s6-anynines/lib.sh /opt/hermes/docker/s6-anynines/lib.s
 # Control & status menu, registered as the `s6` command.
 COPY --chmod=0755 docker/s6-anynines/bin/s6 /usr/local/bin/s6
 
+# User-defined services (registered with `s6 add`) are stored in
+# $HERMES_HOME/s6-services and reinstalled at boot. On the PID-1 path
+# s6-overlay's cont-init is the earliest hook after s6-rc-init built the live
+# tree; the non-PID-1 path is handled by entrypoint-anynines.sh instead.
+COPY --chmod=0755 docker/s6-anynines/cont-init.d/05-anynines-user-services /etc/cont-init.d/05-anynines-user-services
+
 # Session environment for interactive shells. CF's diego-sshd hands ssh
 # sessions a minimal PATH (/bin:/usr/bin) and drops the application env, so
 # `hermes` and `s6` were not on PATH there. The entrypoint writes the real

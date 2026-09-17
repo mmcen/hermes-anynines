@@ -196,6 +196,21 @@ if [ ! -d "$SCANDIR/gateway" ]; then
     exit 1
 fi
 
+# Restore user-defined services (registered with `s6 add`). Their definitions
+# live in the state dir, so they come back after a restart wherever that is
+# persistent; on the PID-1 path /etc/cont-init.d/05-anynines-user-services does
+# the same thing for the s6-overlay tree.
+USER_SVC_DIR="$DATA/s6-services"
+if [ -d "$USER_SVC_DIR" ]; then
+    for d in "$USER_SVC_DIR"/*; do
+        [ -d "$d" ] || continue
+        n="$(basename "$d")"
+        cp -R "$d" "$SCANDIR/$n" 2>/dev/null || continue
+        chmod 0755 "$SCANDIR/$n" "$SCANDIR/$n/run" 2>/dev/null || true
+        echo "[hermes] [anynines] restored user service: $n" >&2
+    done
+fi
+
 echo "[hermes] [anynines] supervised:$(for d in "$SCANDIR"/*; do [ -d "$d" ] && printf ' %s' "$(basename "$d")"; done)" >&2
 echo "[hermes] [anynines] starting s6-svscan (scandir=$SCANDIR)" >&2
 

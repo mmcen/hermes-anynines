@@ -102,6 +102,10 @@ s6 logs    <svc> [-n N] [-f]
 s6 conf                 查看生效配置（密钥脱敏）
 s6 set     KEY=VALUE    添加/修改配置 → 写入 $HERMES_HOME/.env
 s6 unset   KEY          删除配置
+s6 add     <name> [--root] -- <command...>
+                        注册一个自定义服务（s6 守护、崩溃自动重启、
+                        下次启动自动恢复）
+s6 rm      <name>       停止并删除自定义服务
 s6 apply                应用配置（重启 gateway 使其生效）
 s6 doctor               体检：PID 1 / svscan / 服务 / 权限 / provider key / 磁盘 / 崩溃记录
 s6 help                 帮助
@@ -111,6 +115,29 @@ s6 help                 帮助
 - `s6 stop` 会标记 wanted-down（不会被自动拉起），`s6 start` 恢复
 - 崩溃记录写入 `$HERMES_HOME/logs/gateway-crash.log`
 - **镜像更新不在容器内做**：推新镜像 tag 后用 `cf push` 重新部署
+- 菜单自动识别两种监督布局：CF fallback（`/run/s6-anynines/service`，gateway 是
+  服务槽 `gateway`）与 PID-1 平台（s6-overlay，`/run/service`，gateway 由 hermes
+  注册为 `gateway-<profile>`）；`s6 apply` 在后者会回退到 `hermes gateway restart`
+
+### 自定义服务（`s6 add` / `s6 rm`）
+
+给自己的常驻程序套上 s6 守护：
+
+```sh
+s6 add webhook -- /usr/bin/python3 /opt/data/webhook.py --port 8080
+s6 status                    # 会列出 webhook（owner/state）
+s6 logs webhook 40 -f        # 日志（run 脚本的输出按需重定向到 $HERMES_HOME/logs）
+s6 rm webhook                # 停止并删除
+```
+
+- 定义持久化在 `$HERMES_HOME/s6-services/<name>/run`；启动时自动重新安装：
+  CF fallback 路径由 `entrypoint-anynines.sh` 负责，PID-1 路径由
+  `/etc/cont-init.d/05-anynines-user-services` 负责（s6-overlay 的 cont-init 在
+  `s6-rc-init` 建好 `/run/service` 之后运行，是最早可注册的时机）
+- 默认**以 hermes 用户运行**；需要 root 就加 `--root`
+- 内置服务名（gateway/cloudflared/dashboard/sshd/main-hermes）受保护，不能 `add`/`rm`
+- 注意：CF 平台没有持久层，`$HERMES_HOME` 会随重启清空 → 自定义服务也随之消失；
+  Railway 这类带持久卷的平台上才会跨部署保留
 
 ---
 

@@ -1,0 +1,37 @@
+#!/bin/sh
+# Restore user-defined s6 services (registered with `s6 add`) for the
+# s6-overlay / PID-1 path (plain Docker, Railway, Fly …).
+#
+# Why cont-init: s6-overlay's preinit wipes and recreates /run/service at every
+# boot, and s6-rc-init populates it just before cont-init scripts run — so this
+# is the earliest point where extra service directories can be installed.
+# s6-svscan picks them up after the rescan below and s6-supervise keeps them
+# alive (restart on crash), exactly like the services the image ships.
+set -eu
+
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
+STORE="$HERMES_HOME/s6-services"
+LIVE="${S6_LIVE_DIR:-/run/service}"
+
+[ -d "$STORE" ] || exit 0
+[ -d "$LIVE" ] || exit 0
+
+installed=""
+for d in "$STORE"/*; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    case "$n" in .*) continue ;; esac
+    rm -rf "$LIVE/$n"
+    cp -R "$d" "$LIVE/$n" 2>/dev/null || continue
+    chmod 0755 "$LIVE/$n" "$LIVE/$n/run" 2>/dev/null || true
+    installed="$installed $n"
+done
+
+if [ -n "$installed" ]; then
+    echo "[anynines] restoring user services:$installed"
+    if command -v s6-svscanctl >/dev/null 2>&1; then
+        s6-svscanctl -a "$LIVE" || true
+    else
+        /command/s6-svscanctl -a "$LIVE" || true
+    fi
+fi

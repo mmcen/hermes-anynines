@@ -97,26 +97,145 @@ enabled_services() {
     done
 }
 
-# Only the services this image ships (plus hermes' own gateway slots) — the
-# s6-overlay tree on PID-1 platforms also holds internals like base,
-# fix-attrs, legacy-cont-init, s6rc-oneshot-runner, which would drown the table.
+# Only the services this image ships (plus hermes' own gateway slots and any
+# user-defined service) — the s6-overlay tree on PID-1 platforms also holds
+# internals like base, fix-attrs, legacy-cont-init, s6rc-oneshot-runner, which
+# would drown the table.
+S6_BUILTIN_SVC="gateway cloudflared dashboard sshd main-hermes"
+
+is_builtin_service() {
+    case "$1" in
+        gateway|gateway-*|cloudflared|dashboard|sshd|main-hermes) return 0 ;;
+    esac
+    return 1
+}
+
 hermes_services() {
     for s in $(enabled_services); do
-        case "$s" in
-            gateway|gateway-*|cloudflared|dashboard|sshd|main-hermes) printf '%s\n' "$s" ;;
-        esac
+        if is_builtin_service "$s" || is_user_service "$s"; then
+            printf '%s\n' "$s"
+        fi
     done
 }
 
 other_services_count() {
     n=0
     for s in $(enabled_services); do
-        case "$s" in
-            gateway|gateway-*|cloudflared|dashboard|sshd|main-hermes) ;;
-            *) n=$((n + 1)) ;;
-        esac
+        if ! is_builtin_service "$s" && ! is_user_service "$s"; then
+            n=$((n + 1))
+        fi
     done
     printf '%s' "$n"
+}
+
+# --- user-defined services -------------------------------------------------
+# Definitions live in $HERMES_HOME/s6-services/<name>/run so they survive
+# restarts wherever the state dir is persistent. They are installed into the
+# live scan directory at boot by entrypoint-anynines.sh (CF fallback path) and
+# by /etc/cont-init.d/05-anynines-user-services (PID-1 s6-overlay path).
+USER_SVC_DIR="$HERMES_HOME/s6-services"
+
+user_services() {
+    [ -d "$USER_SVC_DIR" ] || return 0
+    for d in "$USER_SVC_DIR"/*; do
+        [ -d "$d" ] || continue
+        case "$(basename "$d")" in .*) continue ;; esac
+        basename "$d"
+    done
+}
+
+is_user_service() { [ -d "$USER_SVC_DIR/${1:-}" ]; }
+
+rescan_live() {
+    s6-svscanctl -a "$SCANDIR" 2>/dev/null ||
+        /command/s6-svscanctl -a "$SCANDIR" 2>/dev/null || true
+}
+
+install_user_service() {
+    n="$1"
+    [ -d "$SCANDIR" ] || return 0
+    rm -rf "$SCANDIR/$n"
+    cp -R "$USER_SVC_DIR/$n" "$SCANDIR/$n" 2>/dev/null || return 0
+    chmod 0755 "$SCANDIR/$n" "$SCANDIR/$n/run" 2>/dev/null || true
+    rescan_live
+    sleep 1
+    s6-svc -u "$SCANDIR/$n" 2>/dev/null || true
+}
+
+# s6 add <name> [--root] -- <command...>
+#   registers a longrun service that s6 supervises (restart on crash) and that
+#   is restored automatically on the next container start. By default it runs
+#   as the hermes user; --root keeps root.
+cmd_add() {
+    require_s6
+    name=""; run_as_root=0; cmd=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --root) run_as_root=1 ;;
+            --) shift; cmd="$*"; break ;;
+            -h|--help) printf 'usage: s6 add <name> [--root] -- <command...>\n'; return 0 ;;
+            *) if [ -z "$name" ]; then name="$1"; else cmd="${cmd:+$cmd }$1"; fi ;;
+        esac
+        shift
+    done
+    [ -n "$name" ] || die "usage: s6 add <name> [--root] -- <command...>"
+    case "$name" in
+        .*|*[!A-Za-z0-9._-]*) die "invalid service name '$name' (letters, digits, . _ - only)" ;;
+    esac
+    if is_builtin_service "$name"; then
+        die "'$name' collides with a built-in service name"
+    fi
+    if [ -z "$cmd" ]; then
+        printf '要守护的命令 (e.g. /usr/bin/myserver --port 8080): '
+        read -r cmd || true
+    fi
+    [ -n "$cmd" ] || die "no command given"
+    esc="$(printf '%s' "$cmd" | sed "s/'/'\\\\''/g")"
+    mkdir -p "$USER_SVC_DIR/$name" || die "cannot write $USER_SVC_DIR"
+    {
+        printf '#!/bin/sh\n'
+        printf '# user service %s — managed by the `s6` menu (s6 add / s6 rm)\n' "$name"
+        printf '# stored at %s/run; installed into %s at boot\n' "$USER_SVC_DIR/$name" "$SCANDIR"
+        printf 'set -e\n'
+        printf 'cd "%s" 2>/dev/null || true\n' "$HERMES_HOME"
+        if [ "$run_as_root" = 1 ]; then
+            printf "exec sh -c '%s'\n" "$esc"
+        else
+            printf 'if [ "$(id -u)" = 0 ]; then\n'
+            printf "    exec s6-setuidgid hermes sh -c '%s'\n" "$esc"
+            printf 'fi\n'
+            printf "exec sh -c '%s'\n" "$esc"
+        fi
+    } >"$USER_SVC_DIR/$name/run"
+    chmod 0755 "$USER_SVC_DIR/$name" "$USER_SVC_DIR/$name/run" 2>/dev/null || true
+    chown --reference="$HERMES_HOME" "$USER_SVC_DIR" "$USER_SVC_DIR/$name" 2>/dev/null || true
+    printf 's6: service %s saved (%s) and start requested\n' "$name" "$USER_SVC_DIR/$name/run"
+    install_user_service "$name"
+    sleep 1
+    cmd_status
+}
+
+# s6 rm <name> — stop and delete a user-defined service (built-ins protected)
+cmd_rm() {
+    require_s6
+    name="$1"
+    [ -n "$name" ] || die "usage: s6 rm <name>"
+    is_user_service "$name" ||
+        die "'$name' is not a user-defined service (built-ins cannot be removed here)"
+    if [ -d "$SCANDIR/$name" ]; then
+        s6-svc -d "$SCANDIR/$name" 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 5 ] && s6-svstat -u "$SCANDIR/$name" >/dev/null 2>&1; do
+            sleep 1
+            i=$((i + 1))
+        done
+        rm -rf "$SCANDIR/$name"
+        rescan_live
+    fi
+    rm -rf "$USER_SVC_DIR/$name"
+    printf 's6: service %s removed\n' "$name"
+    sleep 1
+    cmd_status
 }
 
 targets_of() {
@@ -217,6 +336,7 @@ cmd_status() {
     printf '  provider key    %s\n' \
         "$(for k in NOUS_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY; do
               v="$(env_value "$k")"; [ -n "$v" ] && { printf '%s' "$k"; break; }; done)"
+    printf '  user services   %s\n' "$(user_services | tr '\n' ' ' | sed 's/ $//; s/^$/(none)/')"
     printf '  logs            %s   (s6 logs <service>)\n' "$LOGDIR"
     gw="$(gateway_service 2>/dev/null || true)"
     if [ -n "$gw" ] && ! is_up "$gw"; then
@@ -411,12 +531,16 @@ cmd_help() {
 s6 — service control & configuration menu (hermes-agent-docker / anynines)
 
   s6                       interactive menu (中文)
-  s6 status                service overview
+  s6 status                service overview (also: s6 list)
   s6 start   <svc|all>     start a service          (svc: gateway|cloudflared|dashboard|sshd)
   s6 stop    <svc|all>     stop a service (stays down until started again)
   s6 restart <svc|all>     restart a service
   s6 logs    <svc> [-n N] [-f]
                            tail a service log; also: errors, gateway-crash
+  s6 add     <name> [--root] -- <command...>
+                           register a custom service that s6 supervises
+                           (restart on crash, re-installed automatically at boot)
+  s6 rm      <name>        stop and delete a custom service
   s6 conf                  effective configuration (secrets masked)
   s6 set     KEY=VALUE     add/update a setting in $HERMES_HOME/.env
   s6 unset   KEY           remove a setting
@@ -427,6 +551,11 @@ s6 — service control & configuration menu (hermes-agent-docker / anynines)
 Notes
   • Services are supervised by s6-svscan; a crashed service is restarted
     automatically (~1/s max). `s6 stop` marks it wanted-down so it stays down.
+  • Custom services live in $HERMES_HOME/s6-services/<name>/run and are
+    re-installed at boot (by entrypoint-anynines.sh on non-PID-1 platforms, by
+    /etc/cont-init.d/05-anynines-user-services under s6-overlay). They run as
+    the hermes user unless --root is passed, e.g.
+      s6 add webhook -- /usr/bin/python3 /opt/data/webhook.py
   • Image updates are NOT done from inside the container: push a new image
     tag and re-deploy with `cf push` (see docs/anynines-deployment.md).
   • Config lives in $HERMES_HOME/.env (data dir is ephemeral on this platform —
@@ -455,6 +584,8 @@ cmd_menu() {
   │  7) 添加/修改配置           set KEY=VALUE                 │
   │  8) 应用配置 (重启 gateway) apply                         │
   │  9) 体检                    doctor                        │
+  │  a) 添加自定义服务          add <name> -- <cmd>           │
+  │  d) 删除自定义服务          rm <name>                     │
   │  h) 帮助                    help                          │
   │  0) 退出                                                  │
   └───────────────────────────────────────────────────────────┘
@@ -471,6 +602,19 @@ EOF
             7) printf 'KEY=VALUE: '; read -r kv; [ -n "$kv" ] && cmd_set "$kv" ;;
             8) cmd_apply ;;
             9) cmd_doctor ;;
+            a|A)
+                printf '服务名: '
+                read -r n || break
+                [ -n "$n" ] || continue
+                printf '要守护的命令: '
+                read -r c || break
+                [ -n "$c" ] && cmd_add "$n" -- $c
+                ;;
+            d|D)
+                printf '服务名: '
+                read -r n || break
+                [ -n "$n" ] && cmd_rm "$n"
+                ;;
             h|H|help) cmd_help ;;
             0|q|Q|exit) break ;;
             '') ;;
@@ -489,8 +633,11 @@ case "${1:-}" in
     restart|reload)         cmd_ctl restart "${2:-}" ;;
     logs|log|l)             shift; cmd_logs "$@" ;;
     conf|config|show)       cmd_conf ;;
-    set|add)                cmd_set "${2:-}" ;;
-    unset|del|rm)           cmd_unset "${2:-}" ;;
+    add|svc-add)            shift; cmd_add "$@" ;;
+    rm|svc-rm)              cmd_rm "${2:-}" ;;
+    list|ls)                cmd_status ;;
+    set)                    cmd_set "${2:-}" ;;
+    unset)                  cmd_unset "${2:-}" ;;
     apply|update|up)        cmd_apply ;;
     doctor|check|health)    cmd_doctor ;;
     help|-h|--help)         cmd_help ;;
