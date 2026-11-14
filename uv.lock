@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-10-31T17:15:15.30414199Z"
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
@@ -1919,6 +1919,7 @@ teams = [
     { name = "microsoft-teams-apps" },
 ]
 telegram = [
+    { name = "aiohttp" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
 ]
 termux = [
@@ -1994,6 +1995,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'sms'", specifier = "==3.14.3" },
     { name = "aiohttp", marker = "extra == 'teams'", specifier = "==3.14.3" },
+    { name = "aiohttp", marker = "extra == 'telegram'", specifier = "==3.14.3" },
     { name = "aiohttp-socks", marker = "extra == 'matrix'", specifier = "==0.11.0" },
     { name = "aiosqlite", marker = "extra == 'matrix'", specifier = "==0.22.1" },
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
